@@ -25,6 +25,20 @@ optional pause between sentences. The sentence being spoken lights up and the
 page follows it; click any sentence to start reading from there, or skip by
 sentence or page.
 
+**Finds things.** ⌘F opens a find bar: every match is highlighted and counted,
+arrow keys walk through them, and you can start reading aloud from any hit.
+
+**Points at what matters, without telling you what it says.** The Notable panel
+maps where the document puts its weight — which sections carry the figures, the
+findings, the conclusions, the recommendations — as page numbers, headings and
+reason tags. It deliberately quotes nothing. It tells you where to read; it
+cannot read it for you.
+
+**Reads scans.** A PDF that is images of pages has no text to speak. Open one
+and the app offers to run character recognition on it, in the browser, with
+nothing uploaded — then reads the result like any other document, with a
+standing caveat that OCR makes mistakes.
+
 **Keeps what you marked.** Select any text to highlight it in one of four
 colours, or press <kbd>M</kbd> while it's reading to keep the sentence you just
 heard without reaching for the mouse. Attach a note to any highlight. The Notes
@@ -45,6 +59,8 @@ picks up at the sentence you stopped on, with your highlights and notes intact.
 | <kbd>↑</kbd> <kbd>↓</kbd> | speed |
 | <kbd>M</kbd> | note the current sentence |
 | <kbd>N</kbd> | open the notes panel |
+| <kbd>W</kbd> | open the notable-sections panel |
+| <kbd>⌘F</kbd> / <kbd>Ctrl F</kbd> | find in the document |
 
 ---
 
@@ -70,9 +86,41 @@ something worth listening to is most of the work:
 - **Sentences** are split with an abbreviation table, initials, and decimals
   guarded, then any sentence too long for a comfortable utterance is broken at
   clause boundaries.
+- **Headings** are found three ways — larger type, a different embedded font from
+  the body face, or a short line set off by extra space — because no single
+  signal survives every PDF.
+- **Table rows** are detected by gaps far wider than the line's own word spacing,
+  appearing at least twice, and get commas inserted so the voice pauses between
+  cells instead of running the columns together. Justified text, whose stretched
+  spaces look similar, is deliberately excluded.
+- **Footnote and citation markers** — the raised little numbers — are dropped,
+  because "the yield rose twelve fourteen percent" is not what the page says.
 
-If a PDF has no text layer — a scan, or images of pages — the app says so rather
-than reading nonsense. That needs OCR first.
+### What the voice says vs what the page shows
+
+They are not the same string. URLs become "link", email addresses become "email
+address", `[12]` disappears, `°C` becomes "degrees Celsius", `§` becomes
+"section", bullets are not pronounced. Every spoken character carries an index
+back to the character it came from, so the word highlight still lands on the
+right word on the page while the voice says something more sayable.
+
+### Reading scans
+
+If a page has no text layer, [Tesseract](https://github.com/naptha/tesseract.js)
+runs in a worker over pages rendered to canvas at ~200 dpi. Recognised lines come
+back with bounding boxes, which get fed through the same column, running-head and
+paragraph logic as a normal PDF — so a scan ends up structured, not as one wall
+of text. The engine is vendored and lazy-loaded: nothing is fetched until you
+open a scan, and nothing is uploaded ever. You can stop partway and read the
+pages that finished.
+
+### Notable sections
+
+Sections are scored on numeric density, claim and conclusion language, result
+language, recommendation language and definitions, then normalised against the
+strongest section in the document. What surfaces is a page number, a heading and
+up to three reason tags — never a sentence. If nothing scores meaningfully above
+the median, it says so rather than ranking noise.
 
 ### Highlights
 
@@ -131,7 +179,7 @@ Worker — the only way to run it where `blob:` workers are blocked.
 index.html                    the page
 assets/styles.css             one stylesheet, themed with custom properties
 assets/app.js                 everything: extraction, speech, highlights, notes
-vendor/                       PDF.js, committed rather than fetched from a CDN
+vendor/                       PDF.js and Tesseract, committed rather than from a CDN
 tools/build-single-file.mjs   the bundler
 sw.js                         offline cache — bump CACHE when the shell changes
 ```
@@ -145,10 +193,13 @@ rendering, highlights.
 
 The PDF is read with `FileReader` and parsed in the page. Nothing is uploaded.
 Highlights, notes, reading positions, and preferences live in your browser's
-`localStorage` and never leave the device. The only network request the app makes
-is for the web fonts, and once the service worker has installed, not even that.
+`localStorage` and never leave the device. The only network request the app makes is for the web fonts — and, the first
+time you OCR something, the recognition engine from this same site. Once the
+service worker has installed, not even that.
 
 ## License
 
 MIT — see [LICENSE](LICENSE). Bundles [PDF.js](https://github.com/mozilla/pdf.js)
-(Apache-2.0, see `vendor/LICENSE-pdfjs.txt`).
+(Apache-2.0, `vendor/LICENSE-pdfjs.txt`) and
+[Tesseract.js](https://github.com/naptha/tesseract.js) with the Tesseract engine
+(Apache-2.0, `vendor/tesseract/`).

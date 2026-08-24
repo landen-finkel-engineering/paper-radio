@@ -1,6 +1,6 @@
 /* Paper Radio service worker — makes the app work with no network.
    Bump CACHE whenever the shell changes; the old cache is dropped on activate. */
-const CACHE = "paper-radio-v1";
+const CACHE = "paper-radio-v2";
 const SHELL = [
   "./",
   "./index.html",
