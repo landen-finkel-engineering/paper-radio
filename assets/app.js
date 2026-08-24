@@ -24,18 +24,22 @@ function normChars(s){
           .replace(/⁄/g,"/")
           .replace(/[   ]/g," ")
           .replace(/[​-‍﻿]/g,"")
-          .replace(/|•|▪|●/g,"•");
+          .replace(/|•|▪|●/g,"•")
+          .replace(/\.{3,}/g," ")            /* dot leaders in a table of contents */
+          .replace(/_{3,}/g," ")
+          .replace(/-{4,}/g," ");
 }
 
 /* ---------------- 2. PDF -> LINES ---------------- */
-function parseItems(items){
+function parseItems(items,styles){
   var raw=[],i,it;
   for(i=0;i<items.length;i++){
     it=items[i];
     if(!it||typeof it.str!=="string"||!it.str.trim()) continue;
     var tr=it.transform||[1,0,0,1,0,0];
     var h=Math.abs(it.height)||Math.abs(tr[3])||10;
-    raw.push({str:it.str,x:tr[4],y:tr[5],w:it.width||0,h:h,font:it.fontName||""});
+    var fam=(styles&&styles[it.fontName]&&styles[it.fontName].fontFamily)||"";
+    raw.push({str:it.str,x:tr[4],y:tr[5],w:it.width||0,h:h,font:it.fontName||"",fam:fam});
   }
   return raw;
 }
@@ -53,23 +57,69 @@ function groupRows(raw){
   }
   return rows;
 }
+function median(a){ if(!a.length) return 0; var b=a.slice().sort(function(x,y){return x-y;}); return b[Math.floor(b.length/2)]; }
+var SUPER=/^[\d⁰-₟¹²³†‡*§¶,\s]+$/;
+/* "W E L C O M E" -> "WELCOME", leaving real word gaps alone */
+function unspace(t){
+  var parts=t.split(/\s{2,}/),out=[],i,j;
+  for(i=0;i<parts.length;i++){
+    var toks=parts[i].split(/\s+/).filter(Boolean);
+    if(toks.length<4||toks.length>12){ out.push(parts[i]); continue; }
+    var singles=0;
+    for(j=0;j<toks.length;j++) if(toks[j].length===1) singles++;
+    out.push(singles/toks.length>=0.8 ? toks.join("") : parts[i]);
+  }
+  return out.join(" ");
+}
 function assembleRows(rows,pageH){
   var out=[],i,j;
   for(i=0;i<rows.length;i++){
     var L=rows[i]; L.items.sort(function(a,b){return a.x-b.x;});
-    var txt="",end=null,minX=1e9,maxX=-1e9,fonts={};
+    /* the line's dominant type size, weighted by how much text is set in it */
+    var hw=[],tot=0;
+    for(j=0;j<L.items.length;j++){ hw.push(L.items[j].h); tot+=L.items[j].str.length; }
+    var domH=median(hw)||L.h;
+    var keep=[];
     for(j=0;j<L.items.length;j++){
-      var p=L.items[j];
-      if(end!==null && (p.x-end)>p.h*0.20 && !/\s$/.test(txt) && !/^\s/.test(p.str)) txt+=" ";
+      var it=L.items[j];
+      /* raised, smaller, all-digits: a footnote or citation marker, not a word */
+      if(tot>12 && it.h<domH*0.76 && SUPER.test(it.str) && it.str.trim().length<=4) continue;
+      keep.push(it);
+    }
+    if(!keep.length) continue;
+    var singles=0;
+    for(j=0;j<keep.length;j++) if(keep[j].str.trim().length===1) singles++;
+    var gapsArr=[];
+    for(j=1;j<keep.length;j++){ var gp=keep[j].x-(keep[j-1].x+keep[j-1].w); if(gp>0) gapsArr.push(gp); }
+    var mg=median(gapsArr)||domH*0.26;
+    /* "S O L A R" — every glyph is its own item, so only the wider gaps are word breaks */
+    var letterSpaced=keep.length>=6&&singles/keep.length>=0.6;
+    /* a column break has to be far wider than this line's own word spacing, and a
+       real row has at least two of them — otherwise it is just justified text */
+    var cellGap=domH*1.15,wide=0;
+    for(j=0;j<gapsArr.length;j++) if(gapsArr[j]>cellGap) wide++;
+    var doCells=!letterSpaced&&wide>=2;
+    var cells=0;
+    var txt="",end=null,minX=1e9,maxX=-1e9,fonts={},famBest="";
+    for(j=0;j<keep.length;j++){
+      var p=keep[j];
+      if(end!==null){
+        var gap=p.x-end;
+        var avg=p.str.length?Math.abs(p.w)/p.str.length:domH*0.26;
+        var one=letterSpaced?mg*1.8:Math.max(domH*0.16,avg*0.42);
+        if(doCells&&gap>cellGap&&txt&&!/[,;:]\s*$/.test(txt)){ txt+=", "; cells++; }
+        else if(gap>one&&!/\s$/.test(txt)&&!/^\s/.test(p.str)) txt+=" ";
+      }
       txt+=p.str; end=p.x+p.w;
       if(p.x<minX)minX=p.x; if(p.x+p.w>maxX)maxX=p.x+p.w;
       fonts[p.font]=(fonts[p.font]||0)+p.str.length;
+      if(p.fam&&!famBest) famBest=p.fam;
     }
-    txt=normChars(txt).replace(/\s+/g," ").trim();
+    txt=unspace(normChars(txt)).replace(/\s+/g," ").trim();
     if(!txt) continue;
     var domFont="",best=0;
     for(var f in fonts){ if(fonts[f]>best){best=fonts[f];domFont=f;} }
-    out.push({text:txt,y:L.y,h:L.h,x:minX,w:maxX-minX,right:maxX,font:domFont,rel:L.y/pageH});
+    out.push({text:txt,y:L.y,h:domH,x:minX,w:maxX-minX,right:maxX,font:domFont,fam:famBest,rel:L.y/pageH,cells:cells});
   }
   return out;
 }
@@ -176,7 +226,7 @@ function stripFurniture(pages){
 }
 
 /* ---------------- 5. LINES -> BLOCKS ---------------- */
-function median(a){ if(!a.length) return 0; var b=a.slice().sort(function(x,y){return x-y;}); return b[Math.floor(b.length/2)]; }
+function isBold(l){ return /bold|black|heavy|semib|extrab/i.test((l&&(l.fam+" "+l.font))||""); }
 var HEADPAT=/^(chapter|section|part|appendix|article|annex|abstract|introduction|conclusion|references|bibliography|acknowledg|summary|contents|index|figure|table)\b/i;
 
 function toBlocks(pages){
@@ -192,15 +242,35 @@ function toBlocks(pages){
   var gaps=[];
   for(i=1;i<all.length;i++){ if(all[i].page===all[i-1].page){ var g=all[i-1].y-all[i].y; if(g>0&&g<120) gaps.push(g); } }
   var medGap=median(gaps)||medH*1.35;
+  if(window.PR_DEBUG) window.__PRLINES=all;
+  /* pdf.js gives each embedded font its own id, so "not the body font" is a
+     reliable heading signal even when the font's real name is unavailable */
+  var fc={},bodyFont="",bf=0;
+  for(i=0;i<all.length;i++) fc[all[i].font]=(fc[all[i].font]||0)+all[i].text.length;
+  for(var ff in fc){ if(fc[ff]>bf){ bf=fc[ff]; bodyFont=ff; } }
+  for(i=0;i<all.length;i++){
+    var pv=all[i-1],nx=all[i+1];
+    all[i].up  = (pv&&pv.page===all[i].page)?pv.y-all[i].y:null;
+    all[i].down= (nx&&nx.page===all[i].page)?all[i].y-nx.y:null;
+  }
 
   function isHeading(L,prev){
     var t=L.text;
     if(t.length>150) return false;
-    var big=L.h>=medH*1.14;
+    if(L.cells>0) return false;                 /* it was split into columns: a table row */
+    var big=L.h>=medH*1.14 || (isBold(L)&&!isBold(prev)&&L.h>=medH*0.98);
     var words=t.split(/\s+/).length;
     var fills=L.right>=bodyRight-medH*0.9;   /* line runs the full measure => wrapped body text */
     if(big && words<=22 && !(fills&&words>12)) return true;
     if(fills) return false;
+    var clean=!/[.,;:]$/.test(t);
+    /* a short line set in something other than the body face */
+    if(clean && words<=16 && bodyFont && L.font && L.font!==bodyFont &&
+       L.right<bodyRight-medH*1.2 && (L.up===null||L.up>=medGap*0.9)) return true;
+    /* or one set off by extra space above and below */
+    if(clean && words<=14 &&
+       (L.up===null||L.up>medGap*1.22) && (L.down===null||L.down>medGap*0.9) &&
+       L.right<bodyRight-medH*1.4) return true;
     if(HEADPAT.test(t) && words<=14 && !/[.!?]$/.test(t)) return true;
     if(/^\d+(\.\d+)*\.?\s+\S/.test(t) && words<=14 && !/[.!?;,]$/.test(t) && L.h>=medH*1.02) return true;
     if(/^[A-Z0-9 .,'’&()\/-]{6,60}$/.test(t) && /[A-Z]{3}/.test(t) && words<=12 && !/[.!?]$/.test(t) && (!prev||prev.h<=L.h)) return true;
@@ -224,7 +294,11 @@ function toBlocks(pages){
 
     var head=isHeading(L,prev);
     if(head||(cur&&cur.head)) brk=true;
-    if(brk){ cur={type:head?"heading":"para",lines:[L],page:L.page,x:L.x,head:head}; blocks.push(cur); }
+    if(brk){
+      var listy=/^([\u2022\u25aa\u25cf\u2013-]\s+|\(?\d{1,2}[.)]\s+|[a-z]\)\s+)/.test(L.text);
+      cur={type:head?"heading":(listy?"list":"para"),lines:[L],page:L.page,x:L.x,head:head};
+      blocks.push(cur);
+    }
     else cur.lines.push(L);
   }
   var out=[];
@@ -238,10 +312,89 @@ function toBlocks(pages){
     }
     txt=txt.replace(/\s+/g," ").replace(/\s+([,.;:!?)])/g,"$1").trim();
     if(txt.length<2) continue;
-    if(b.type==="para" && txt.length<=22 && PAGENUM.test(txt)) continue;
+    if(b.type!=="heading" && txt.length<=22 && PAGENUM.test(txt)) continue;
     out.push({type:b.type,text:txt,page:b.page});
   }
   return out;
+}
+
+/* ---------------- 5b. WHAT THE VOICE SAYS ---------------- */
+/* The page keeps the author's characters; the voice gets something sayable.
+   `map` carries every spoken character back to where it came from, so the
+   word highlight still lands on the right word on the page. */
+var SAY_RULES=[
+  {re:/\[[\d,;\s–—-]{1,24}\]/g,           out:""},
+  {re:/\b(?:https?:\/\/|www\.)[^\s,;)]+/gi,          out:" link"},
+  {re:/\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b/g,             out:" email address"},
+  {re:/\bdoi:\s*\S+/gi,                              out:" a DOI"},
+  {re:/\s*%/g,                                       out:" percent"},
+  {re:/°\s*C\b/g,                               out:" degrees Celsius"},
+  {re:/°\s*F\b/g,                               out:" degrees Fahrenheit"},
+  {re:/°/g,                                     out:" degrees"},
+  {re:/(\d)\s*[×x]\s*(?=\d)/g,                  out:"$1 by "},
+  {re:/×/g,                                     out:" times "},
+  {re:/±/g,                                     out:" plus or minus "},
+  {re:/≈/g,                                     out:" about "},
+  {re:/≤/g,                                     out:" at most "},
+  {re:/≥/g,                                     out:" at least "},
+  {re:/≠/g,                                     out:" not equal to "},
+  {re:/→/g,                                     out:" to "},
+  {re:/\s=\s/g,                                 out:" equals "},
+  {re:/§\s*/g,                                  out:" section "},
+  {re:/[µμ]/g,                             out:"micro"},
+  {re:/–|—/g,                              out:" - "},
+  {re:/^[•▪●]\s*/,                    out:""},
+  {re:/•/g,                                     out:", "}
+];
+function speechify(text){
+  var hits=[],i,r,m;
+  for(i=0;i<SAY_RULES.length;i++){
+    r=SAY_RULES[i];
+    if(r.re.global){
+      r.re.lastIndex=0;
+      while((m=r.re.exec(text))){
+        if(m[0]==="") { r.re.lastIndex++; continue; }
+        hits.push({a:m.index,b:m.index+m[0].length,out:r.out.replace("$1",m[1]!==undefined?m[1]:"")});
+      }
+    } else {
+      m=text.match(r.re);
+      if(m&&m.index===0||m&&text.indexOf(m[0])===0) hits.push({a:0,b:m[0].length,out:r.out});
+    }
+  }
+  if(!hits.length) return null;
+  hits.sort(function(x,y){ return x.a-y.a || (y.b-y.a)-(x.b-x.a); });
+  var pick=[],last=-1;
+  for(i=0;i<hits.length;i++){ if(hits[i].a>=last){ pick.push(hits[i]); last=hits[i].b; } }
+  var say="",map=[],k=0,p=0;
+  for(i=0;i<pick.length;i++){
+    for(;k<pick[i].a;k++){ say+=text.charAt(k); map.push(k); }
+    for(var c=0;c<pick[i].out.length;c++){ say+=pick[i].out.charAt(c); map.push(pick[i].a); }
+    k=pick[i].b;
+  }
+  for(;k<text.length;k++){ say+=text.charAt(k); map.push(k); }
+  /* squeeze the whitespace the substitutions left behind, keeping the map aligned */
+  var o="",om=[],prevSpace=false;
+  for(i=0;i<say.length;i++){
+    var ch=say.charAt(i),isSp=/\s/.test(ch);
+    if(isSp){ if(prevSpace||!o) { prevSpace=true; continue; } ch=" "; }
+    prevSpace=isSp;
+    o+=ch; om.push(map[i]);
+  }
+  while(o.length&&/\s$/.test(o)){ o=o.slice(0,-1); om.pop(); }
+  o=o.replace(/\s+([,.;:!?])/g,"$1");
+  if(o.length!==om.length){ om=om.slice(0,o.length); while(om.length<o.length) om.push(text.length-1); }
+  if(!o) return null;
+  return o===text?null:{say:o,map:om};
+}
+/* the display range for a run of spoken characters */
+function sayToText(sent,a,b){
+  if(!sent.map) return [a,b];
+  var m=sent.map,n=m.length;
+  if(a>=n) return null;
+  var s0=m[Math.max(0,Math.min(n-1,a))];
+  var s1=m[Math.max(0,Math.min(n-1,b-1))]+1;
+  if(s1<=s0) s1=s0+1;
+  return [s0,s1];
 }
 
 /* ---------------- 6. SENTENCES ---------------- */
@@ -309,8 +462,10 @@ function buildSentences(blocks){
     for(j=0;j<raw.length;j++){
       var pieces=chunkLong(raw[j],320);
       for(var q=0;q<pieces.length;q++){
-        sents.push({i:sents.length,text:pieces[q],page:b.page,block:i,sec:secIdx,
-                    head:b.type==="heading",ord:k++,words:pieces[q].split(/\s+/).length});
+        var sp=speechify(pieces[q]);
+        sents.push({i:sents.length,text:pieces[q],say:sp?sp.say:null,map:sp?sp.map:null,
+                    page:b.page,block:i,sec:secIdx,head:b.type==="heading",
+                    ord:k++,words:pieces[q].split(/\s+/).length});
       }
     }
     if(secIdx>=0) sections[secIdx].to=sents.length;
@@ -323,7 +478,8 @@ var SS=window.speechSynthesis;
 var ST={model:null,queue:[],idx:0,playing:false,
         rate:1,pitch:1,vol:1,gap:0,voiceURI:null,size:19.5,spans:[],token:0,
         lastEvent:0,autoScroll:true,scrollLock:0,voices:[],
-        marks:[],markIndex:{},color:"butter",filter:"all"};
+        marks:[],markIndex:{},color:"butter",filter:"all",
+        find:{q:"",hits:[],cur:-1},findIndex:{},notable:[]};
 var LSKEY="paperradio.v2";
 var MKEY="paperradio.marks.v1";
 
@@ -454,32 +610,73 @@ function scrollTo(el,force){
   $("#jump").classList.remove("show");
 }
 function sentHTML(i,wr){
-  var text=ST.model.sents[i].text, segs=ST.markIndex[i];
-  if((!segs||!segs.length)&&!wr) return esc(text);
-  var n=text.length,col=new Array(n),ids=new Array(n),k,j;
+  var text=ST.model.sents[i].text, segs=ST.markIndex[i], fx=ST.findIndex[i];
+  if((!segs||!segs.length)&&(!fx||!fx.length)&&!wr) return esc(text);
+  var n=text.length,col=new Array(n),ids=new Array(n),fnd=new Array(n),k,j;
   if(segs) for(k=0;k<segs.length;k++){
-    var sg=segs[k],a=Math.max(0,sg.a),b=Math.min(n,sg.b);
-    for(j=a;j<b;j++){ col[j]=sg.color; ids[j]=sg.id; }
+    var sg=segs[k];
+    for(j=Math.max(0,sg.a);j<Math.min(n,sg.b);j++){ col[j]=sg.color; ids[j]=sg.id; }
   }
+  if(fx) for(k=0;k<fx.length;k++){
+    var fh=fx[k];
+    for(j=Math.max(0,fh.a);j<Math.min(n,fh.b);j++) fnd[j]=fh.n;
+  }
+  function word(x){ return !!(wr&&x>=wr[0]&&x<wr[1]); }
   var out="";k=0;
   while(k<n){
-    var c=col[k],id=ids[k],w=!!(wr&&k>=wr[0]&&k<wr[1]);
+    var c=col[k],id=ids[k],f=fnd[k],w=word(k);
     j=k+1;
-    while(j<n && col[j]===c && ids[j]===id && (!!(wr&&j>=wr[0]&&j<wr[1]))===w) j++;
+    while(j<n&&col[j]===c&&ids[j]===id&&fnd[j]===f&&word(j)===w) j++;
     var chunk=esc(text.slice(k,j));
-    if(c) out+='<mark class="hl '+c+(w?" w":"")+'" data-hl="'+id+'">'+chunk+"</mark>";
-    else if(w) out+='<mark class="w">'+chunk+"</mark>";
-    else out+=chunk;
+    if(c===undefined&&f===undefined&&!w){ out+=chunk; k=j; continue; }
+    var cls=[];
+    if(c){ cls.push("hl",c); }
+    if(f!==undefined){ cls.push("fx"); if(f===ST.find.cur) cls.push("cur"); }
+    if(w) cls.push("w");
+    out+='<mark class="'+cls.join(" ")+'"'+(c?' data-hl="'+id+'"':"")+">"+chunk+"</mark>";
     k=j;
   }
   return out;
 }
-function paintWord(i,ci,cl,text){
-  var el=itemEl(i); if(!el||ci<0||ci>=text.length) return;
-  var end=cl?ci+cl:(function(){ var m=text.slice(ci).match(/^\S+/); return ci+(m?m[0].length:0); })();
-  el.innerHTML=sentHTML(i,[ci,end]);
+function snapWord(t,ci,cl){
+  if(ci==null||ci<0) ci=0;
+  if(ci>=t.length) return null;
+  var a=ci;
+  while(a>0&&!/\s/.test(t.charAt(a-1))) a--;          /* engines sometimes land mid-word */
+  var b=cl?Math.min(t.length,ci+cl):a;
+  while(b<t.length&&!/\s/.test(t.charAt(b))) b++;
+  if(b<=a) b=Math.min(t.length,a+1);
+  return [a,b];
 }
-function clearWord(i){ var el=itemEl(i); if(el) el.innerHTML=sentHTML(i); }
+function paintWord(i,ci,cl,text){
+  var el=itemEl(i); if(!el) return;
+  var w=snapWord(text,ci,cl); if(!w) return;
+  var q=ST.queue[i],sent=q&&q.sent;
+  var range=(sent&&sent.map)?sayToText(sent,w[0],w[1]):w;
+  if(!range) return;
+  el.innerHTML=sentHTML(i,range);
+}
+/* Some voices never fire boundary events. Pace the highlight off the clock instead. */
+function estStart(i,text){
+  estStop();
+  var words=[],re=/\S+/g,m;
+  while((m=re.exec(text))) words.push([m.index,m.index+m[0].length]);
+  if(!words.length) return;
+  var units=words.map(function(w){ return (w[1]-w[0])+1; });
+  var total=units.reduce(function(a,b){return a+b;},0);
+  var cps=14.5*clamp(ST.rate,0.3,4);                    /* characters per second, roughly */
+  var t0=performance.now(),last=-1;
+  ST.est={i:i,stop:false,raf:0};
+  (function tick(){
+    if(!ST.est||ST.est.stop||ST.idx!==i||!ST.playing) return;
+    var done=(performance.now()-t0)/1000*cps,acc=0,k=0;
+    for(;k<units.length-1;k++){ acc+=units[k]; if(acc>done) break; }
+    if(k!==last){ last=k; paintWord(i,words[k][0],words[k][1]-words[k][0],text); }
+    ST.est.raf=requestAnimationFrame(tick);
+  })();
+}
+function estStop(){ if(ST.est){ ST.est.stop=true; cancelAnimationFrame(ST.est.raf); ST.est=null; } }
+function clearWord(i){ estStop(); var el=itemEl(i); if(el) el.innerHTML=sentHTML(i); }
 function speakAt(i,resume){
   if(!SS) return;
   if(i<0) i=0;
@@ -497,14 +694,22 @@ function speakAt(i,resume){
     if(v){ try{ u.voice=v; }catch(e){} if(v.lang) u.lang=v.lang; }
     u.rate=clamp(ST.rate,0.1,10); u.pitch=ST.pitch; u.volume=ST.vol;
     ST.lastEvent=Date.now();
-    u.onstart=function(){ ST.lastEvent=Date.now(); };
+    ST.sawBoundary=false;
+    u.onstart=function(){
+      ST.lastEvent=Date.now();
+      setTimeout(function(){
+        if(token===ST.token&&ST.playing&&!ST.sawBoundary) estStart(i,text);
+      },800);
+    };
     u.onboundary=function(e){
       ST.lastEvent=Date.now();
       if(e.name&&e.name!=="word"&&e.name!=="sentence") return;
+      if(!ST.sawBoundary){ ST.sawBoundary=true; estStop(); }
       meterKick();
       paintWord(i,e.charIndex,e.charLength,text);
     };
     u.onend=function(){
+      estStop();
       if(token!==ST.token||!ST.playing) return;
       ST.lastEvent=Date.now();
       clearWord(i);
@@ -529,13 +734,13 @@ function play(){
   setPlaying(true); speakAt(ST.idx);
 }
 function pause(){
-  setPlaying(false); ST.token++;
+  setPlaying(false); ST.token++; estStop();
   try{ SS.cancel(); }catch(e){}
   clearWord(ST.idx); var el=itemEl(ST.idx); if(el) el.classList.add("on");
   libTouch();
 }
 function stop(finished){
-  setPlaying(false); ST.token++;
+  setPlaying(false); ST.token++; estStop();
   try{ SS.cancel(); }catch(e){}
   if(finished){ toast("That's the end of the document."); ST.idx=Math.max(0,ST.queue.length-1); paintActive(ST.idx); }
   libTouch(); updateReadout();
@@ -608,14 +813,16 @@ function renderDoc(){
       curPage=blk.page;
     }
     var inner=list.map(function(s){ return '<span class="s" data-i="'+s.i+'">'+sentHTML(s.i)+"</span>"; }).join(" ");
-    html.push(blk.type==="heading"?'<h2 class="hd">'+inner+"</h2>":'<p class="pg">'+inner+"</p>");
+    html.push(blk.type==="heading"?'<h2 class="hd">'+inner+"</h2>"
+             :blk.type==="list"?'<p class="pg li">'+inner+"</p>"
+             :'<p class="pg">'+inner+"</p>");
   }
   var doc=$("#doc");
   doc.innerHTML=html.join("")||'<p class="pg">No readable text found.</p>';
   if(m.warning) doc.insertAdjacentHTML("afterbegin",'<div class="note"><b>Heads up.</b> '+esc(m.warning)+"</div>");
   ST.spans=[];
   $$("#doc .s").forEach(function(el){ ST.spans[+el.dataset.i]=el; });
-  ST.queue=m.sents.map(function(s){ return {text:s.text,el:ST.spans[s.i]}; });
+  ST.queue=m.sents.map(function(s){ return {text:s.say||s.text,el:ST.spans[s.i],sent:s}; });
   ST.doneUpTo=0;
   /* page ticks on the rail */
   var ticks=[],seen={},step=Math.max(1,Math.ceil(m.pages/42));
@@ -677,7 +884,7 @@ function openArrayBuffer(buf,name,password){
       return pdf.getPage(i).then(function(pg){
         var vp=pg.getViewport({scale:1});
         return pg.getTextContent().then(function(tc){
-          var raw=parseItems(tc.items);
+          var raw=parseItems(tc.items,tc.styles);
           if(!decided){
             addCoverage(bins,raw,vp.width);
             buffer.push({raw:raw,num:i,w:vp.width,h:vp.height});
@@ -692,17 +899,21 @@ function openArrayBuffer(buf,name,password){
       progress(92,"Sorting out the text…");
       stripFurniture(pages);
       var blocks=toBlocks(pages);
-      var warning=null;
-      if(chars<Math.max(60,n*22)){
-        warning="This PDF has almost no text layer — it looks like a scan or images of pages. A reader can only speak text it can actually read, so you'd need to run OCR on it first.";
-      }
+      var scanned=chars<Math.max(60,n*22);
+      var warning=scanned?("This PDF has almost no text layer — it looks like a scan or images of pages. "+
+        (ocrAvailable()?"Open it again to run character recognition over it.":
+         "A reader can only speak text it can actually read, so it needs OCR first.")):null;
       var id=name+"|"+(buf.byteLength||bytes.length)+"|"+n;
-      var model=buildModel(blocks,{id:id,title:name.replace(/\.pdf$/i,""),pages:n,warning:warning});
-      model.title=niceTitle(model,model.title);
-      progress(100,"Ready");
-      mountModel(model);
-      pdf.destroy&&pdf.destroy();
-      if(!warning) toast("Read "+model.pages+" pages in "+((Date.now()-t0)/1000).toFixed(1)+"s");
+      function mountPlain(){
+        var model=buildModel(blocks,{id:id,title:name.replace(/\.pdf$/i,""),pages:n,warning:warning});
+        model.title=niceTitle(model,model.title);
+        progress(100,"Ready");
+        mountModel(model);
+        pdf.destroy&&pdf.destroy();
+        if(!warning) toast("Read "+model.pages+" pages in "+((Date.now()-t0)/1000).toFixed(1)+"s");
+      }
+      if(scanned&&ocrAvailable()){ offerOCR(pdf,name,id,n,mountPlain); return; }
+      mountPlain();
     }
     step(1).catch(fail);
   }).catch(function(err){
@@ -731,7 +942,8 @@ function mountModel(model){
   var saved=libLoad().filter(function(e){return e.id===model.id;})[0];
   if(saved&&saved.idx>0&&saved.idx<model.sents.length) ST.idx=saved.idx;
   APP.setAttribute("data-view","reader");
-  renderDoc(); renderMarks();
+  ST.find={q:"",hits:[],cur:-1}; ST.findIndex={};
+  renderDoc(); renderMarks(); renderNotable();
   paintActive(ST.idx); updateReadout(); libTouch();
   overlayClose();
   setTimeout(function(){ scrollTo(itemEl(ST.idx),true); },60);
@@ -824,7 +1036,7 @@ $("#hlNote").onclick=function(){
   if(!id){ var m=addMark(ST.color); id=m&&m.id; }
   hideTool();
   if(!id) return;
-  setPanel(true);
+  setPanel(true,"marks");
   setTimeout(function(){
     var li=$('#markList li[data-id="'+id+'"]');
     if(li) openNote(li,id);
@@ -932,13 +1144,26 @@ document.addEventListener("click",function(e){
     $("#tune").classList.remove("open"); $("#tuneBtn").setAttribute("aria-expanded","false");
   }
 });
+function panelMode(){ return $("#panel").getAttribute("data-mode"); }
 function panelOpen(){ return APP.getAttribute("data-panel")==="open"; }
-function setPanel(open){
+function setPanel(open,mode){
+  if(mode){
+    $("#panel").setAttribute("data-mode",mode);
+    $$(".modes button").forEach(function(b){ b.setAttribute("aria-selected",b.dataset.mode===mode?"true":"false"); });
+  }
   APP.setAttribute("data-panel",open?"open":"closed");
-  $("#marksBtn").setAttribute("aria-pressed",open?"true":"false");
+  var m=panelMode();
+  $("#marksBtn").setAttribute("aria-pressed",open&&m==="marks"?"true":"false");
+  $("#notableBtn").setAttribute("aria-pressed",open&&m==="notable"?"true":"false");
 }
-$("#marksBtn").onclick=function(){ setPanel(!panelOpen()); };
+function togglePanel(mode){
+  if(panelOpen()&&panelMode()===mode) setPanel(false);
+  else setPanel(true,mode);
+}
+$("#marksBtn").onclick=function(){ togglePanel("marks"); };
+$("#notableBtn").onclick=function(){ togglePanel("notable"); };
 $("#panelClose").onclick=function(){ setPanel(false); };
+$$(".modes button").forEach(function(b){ b.onclick=function(){ setPanel(true,b.dataset.mode); }; });
 $("#sizeUp").onclick=function(){ setSize(ST.size+1.5); };
 $("#sizeDown").onclick=function(){ setSize(ST.size-1.5); };
 document.addEventListener("keydown",function(e){
@@ -953,9 +1178,11 @@ document.addEventListener("keydown",function(e){
     case "ArrowDown": e.preventDefault(); setRate(ST.rate-0.05); break;
     case "]": jumpPage(1); break;
     case "[": jumpPage(-1); break;
-    case "n": case "N": setPanel(!panelOpen()); break;
+    case "n": case "N": togglePanel("marks"); break;
+    case "w": case "W": togglePanel("notable"); break;
+    case "f": case "F": if(e.metaKey||e.ctrlKey){ e.preventDefault(); openFind(); } break;
     case "m": case "M": e.preventDefault(); markCurrentSentence(); break;
-    case "Escape": setPanel(false); $("#tune").classList.remove("open"); hideTool(); break;
+    case "Escape": setPanel(false); $("#tune").classList.remove("open"); hideTool(); closeFind(); break;
   }
 });
 window.addEventListener("beforeunload",function(){ try{ libTouch(); SS&&SS.cancel(); }catch(e){} });
@@ -1162,6 +1389,335 @@ function saveFile(name,text){
       copyText(text,"Couldn't save the file — copied to the clipboard instead.");
     });
   },function(){ copyText(text,"Couldn't save the file — copied to the clipboard instead."); });
+}
+
+
+/* ---------------- 20. FIND IN DOCUMENT ---------------- */
+function findRepaint(list){
+  for(var i=0;i<list.length;i++){ var el=ST.spans[list[i]]; if(el) el.innerHTML=sentHTML(list[i]); }
+}
+function runFind(q){
+  var was=Object.keys(ST.findIndex).map(Number);
+  ST.find.q=q; ST.find.hits=[]; ST.find.cur=-1; ST.findIndex={};
+  var needle=q.trim().toLowerCase();
+  if(needle.length>=2&&ST.model){
+    var sents=ST.model.sents;
+    for(var i=0;i<sents.length;i++){
+      var hay=sents[i].text.toLowerCase(),p=0,at;
+      while((at=hay.indexOf(needle,p))>=0){
+        var n=ST.find.hits.length;
+        ST.find.hits.push({s:i,a:at,b:at+needle.length});
+        (ST.findIndex[i]||(ST.findIndex[i]=[])).push({a:at,b:at+needle.length,n:n});
+        p=at+needle.length;
+        if(ST.find.hits.length>4000) break;
+      }
+      if(ST.find.hits.length>4000) break;
+    }
+  }
+  var now=Object.keys(ST.findIndex).map(Number);
+  var seen={},all=[];
+  was.concat(now).forEach(function(x){ if(!seen[x]){seen[x]=1;all.push(x);} });
+  findRepaint(all);
+  if(ST.find.hits.length) gotoHit(0,true); else findCount();
+}
+function findCount(){
+  var n=ST.find.hits.length,el=$("#findcount");
+  el.textContent=!ST.find.q.trim()?"":(n?((ST.find.cur+1)+" of "+n):"no matches");
+  $("#findPrev").disabled=$("#findNext").disabled=$("#findPlay").disabled=!n;
+}
+function gotoHit(k,quiet){
+  var hits=ST.find.hits; if(!hits.length) return;
+  k=((k%hits.length)+hits.length)%hits.length;
+  var prev=ST.find.cur; ST.find.cur=k;
+  var touch=[];
+  if(prev>=0&&hits[prev]) touch.push(hits[prev].s);
+  touch.push(hits[k].s);
+  findRepaint(touch);
+  findCount();
+  var el=ST.spans[hits[k].s];
+  if(el){ ST.scrollLock=0; ST.autoScroll=true; scrollTo(el,true); }
+  if(!quiet) return;
+}
+function openFind(){
+  var bar=$("#findbar");
+  bar.hidden=false;
+  $("#findBtn").setAttribute("aria-pressed","true");
+  var q=$("#findq"); q.focus(); q.select();
+}
+function closeFind(){
+  if($("#findbar").hidden) return;
+  $("#findbar").hidden=true;
+  $("#findBtn").setAttribute("aria-pressed","false");
+  $("#findq").value="";
+  runFind("");
+}
+$("#findBtn").onclick=function(){ $("#findbar").hidden?openFind():closeFind(); };
+$("#findClose").onclick=closeFind;
+$("#findNext").onclick=function(){ gotoHit(ST.find.cur+1); };
+$("#findPrev").onclick=function(){ gotoHit(ST.find.cur-1); };
+$("#findPlay").onclick=function(){
+  var h=ST.find.hits[ST.find.cur]; if(!h) return;
+  jumpToIndex(h.s,true);
+};
+(function(){
+  var t=null;
+  $("#findq").addEventListener("input",function(e){
+    clearTimeout(t);
+    var v=e.target.value;
+    t=setTimeout(function(){ runFind(v); },160);
+  });
+  $("#findq").addEventListener("keydown",function(e){
+    if(e.key==="Enter"){ e.preventDefault(); gotoHit(ST.find.cur+(e.shiftKey?-1:1)); }
+    else if(e.key==="Escape"){ e.preventDefault(); closeFind(); }
+  });
+})();
+
+/* ---------------- 21. NOTABLE SECTIONS ---------------- */
+/* Signposts, not summary: this ranks where the document's weight sits and
+   points at the page. It never surfaces a sentence. */
+var SIG={
+  claim:/\b(we (?:find|show|present|propose|argue|report)|this (?:suggests|shows|means|implies)|therefore|thus|hence|conclude[sd]?|in conclusion|overall|the key insight)\b/i,
+  reco:/\b(recommend\w*|should|must|need to|priority|priorities|propose[sd]?|next steps?|action\b)/i,
+  def:/\b(is defined as|are defined as|refers to|means that|we define|is called|are called|known as)\b/i,
+  result:/\b(result\w*|found|observed|measured|increase\w*|decrease\w*|reduc\w+|improv\w+|fell|rose|grew|declin\w+|compared (?:with|to)|relative to|average|median|percent)\b/i
+};
+var TITLE_HINT=/\b(result|finding|conclusion|recommend|discussion|summary|abstract|implication|analysis|outlook)/i;
+var TITLE_SKIP=/^(references|bibliography|works cited|notes|acknowledg|appendix|index|contents|table of contents|about the author|copyright)\b/i;
+function buildNotable(){
+  var m=ST.model; if(!m||!m.sents.length) return [];
+  var groups=[],i,s;
+  if(m.sections.length>=2){
+    for(s=0;s<m.sections.length;s++){
+      var list=[];
+      for(i=0;i<m.sents.length;i++) if(m.sents[i].sec===s&&!m.sents[i].head) list.push(m.sents[i]);
+      if(list.length<2||TITLE_SKIP.test(m.sections[s].title)) continue;
+      groups.push({title:m.sections[s].title,page:m.sections[s].page,first:list[0].i,sents:list});
+    }
+  }
+  if(groups.length<2){
+    var byPage={},pages=[];
+    for(i=0;i<m.sents.length;i++){
+      var pg=m.sents[i].page;
+      if(!byPage[pg]){ byPage[pg]=[]; pages.push(pg); }
+      byPage[pg].push(m.sents[i]);
+    }
+    pages.sort(function(a,b){return a-b;});
+    var step=Math.max(1,Math.ceil(pages.length/14));
+    groups=[];
+    for(i=0;i<pages.length;i+=step){
+      var chunk=[],last=Math.min(pages.length,i+step);
+      for(var q=i;q<last;q++) chunk=chunk.concat(byPage[pages[q]]);
+      if(chunk.length<2) continue;
+      var a=pages[i],b2=pages[last-1];
+      groups.push({title:a===b2?("Page "+a):("Pages "+a+"–"+b2),page:a,first:chunk[0].i,sents:chunk});
+    }
+  }
+  if(!groups.length) return [];
+  var maxD=0;
+  for(i=0;i<groups.length;i++){
+    var g=groups[i],words=0,digits=0,c=0,r=0,d=0,rs=0;
+    for(s=0;s<g.sents.length;s++){
+      var t=g.sents[s].text;
+      words+=g.sents[s].words;
+      var nm=t.match(/\b\d[\d.,]*\b/g); if(nm) digits+=nm.length;
+      if(SIG.claim.test(t)) c++;
+      if(SIG.reco.test(t)) r++;
+      if(SIG.def.test(t)) d++;
+      if(SIG.result.test(t)) rs++;
+    }
+    var n=g.sents.length;
+    g.sig={fig:words?digits/words*100:0, claim:c/n, reco:r/n, def:d/n, res:rs/n};
+    if(g.sig.fig>maxD) maxD=g.sig.fig;
+    g.words=words;
+  }
+  for(i=0;i<groups.length;i++){
+    var gg=groups[i],sg=gg.sig;
+    var figN=maxD?Math.min(1,sg.fig/maxD):0;
+    gg.score=0.32*figN+0.24*Math.min(1,sg.claim*2.2)+0.22*Math.min(1,sg.res*1.6)
+            +0.14*Math.min(1,sg.reco*2.2)+0.08*Math.min(1,sg.def*3)
+            +(TITLE_HINT.test(gg.title)?0.12:0)
+            +Math.min(0.06,gg.words/6000);
+    var tags=[];
+    if(figN>0.42||sg.fig>4) tags.push("figures");
+    if(sg.res>0.26) tags.push("findings");
+    if(sg.claim>0.15) tags.push("conclusions");
+    if(sg.reco>0.22) tags.push("recommendations");
+    if(sg.def>0.12) tags.push("definitions");
+    if(!tags.length) tags.push(gg.words>400?"substance":"context");
+    gg.tags=tags.slice(0,3);
+  }
+  var top=0;
+  for(i=0;i<groups.length;i++) if(groups[i].score>top) top=groups[i].score;
+  /* if everything scores alike there is no weight to point at, and saying so
+     is more honest than listing every section at full marks */
+  var sorted=groups.map(function(g){return g.score;}).sort(function(a,b){return a-b;});
+  var mid=sorted[Math.floor(sorted.length/2)];
+  if(groups.length>=4&&top>0&&(top-mid)/top<0.12) return [];
+  var keep=groups.filter(function(g){ return g.score>=top*0.55; });
+  if(keep.length<3) keep=groups.slice().sort(function(a,b){return b.score-a.score;}).slice(0,Math.min(3,groups.length));
+  keep=keep.sort(function(a,b){return b.score-a.score;}).slice(0,12);
+  keep.forEach(function(g){ g.rel=top?g.score/top:0; });
+  return keep.sort(function(a,b){ return a.first-b.first; });
+}
+function renderNotable(){
+  ST.notable=buildNotable();
+  var host=$("#notableList");
+  if(!ST.notable.length){
+    host.innerHTML='<div class="pn-empty">Nothing stands out.<br><br>This document is evenly weighted — no section carries noticeably more of the figures, findings or conclusions than the rest. Read it in order.</div>';
+    return;
+  }
+  host.innerHTML=ST.notable.map(function(g){
+    var bars="";
+    for(var k=0;k<5;k++) bars+='<i class="'+(g.rel*5>k+0.35?"on":"")+'"></i>';
+    return '<li><button data-i="'+g.first+'"><span class="pg">P.'+g.page+'</span><span>'+
+      "<h4>"+esc(g.title.length>72?g.title.slice(0,72)+"…":g.title)+"</h4>"+
+      '<span class="wbar">'+bars+"</span>"+
+      '<span class="tags">'+g.tags.map(function(t){return "<span>"+t+"</span>";}).join("")+
+      "</span></span></button></li>";
+  }).join("");
+}
+$("#notableList").addEventListener("click",function(e){
+  var b=e.target.closest("button[data-i]"); if(!b) return;
+  jumpToIndex(+b.dataset.i,false);
+  if(innerWidth<1040) setPanel(false);
+});
+
+
+/* ---------------- 22. OCR FOR SCANNED PAGES ---------------- */
+/* Only available when the app is served as files (the OCR engine is far too
+   large to inline). Loaded on demand, so it costs nothing until it is needed. */
+function ocrAvailable(){ return !!window.PR_OCR_BASE; }
+function loadScriptOnce(src){
+  if(!loadScriptOnce.cache) loadScriptOnce.cache={};
+  if(loadScriptOnce.cache[src]) return loadScriptOnce.cache[src];
+  loadScriptOnce.cache[src]=new Promise(function(res,rej){
+    var el=document.createElement("script");
+    el.src=src; el.async=true;
+    el.onload=function(){ res(true); };
+    el.onerror=function(){ rej(new Error("Could not load "+src)); };
+    document.head.appendChild(el);
+  });
+  return loadScriptOnce.cache[src];
+}
+function ocrLines(d,scale,pageH){
+  var lines=[],seen=[];
+  /* walk down to the leaf lines only — blocks and paragraphs carry the same
+     text as their children and would otherwise be counted twice */
+  function collect(arr){
+    if(!arr) return;
+    for(var i=0;i<arr.length;i++){
+      var L=arr[i]; if(!L) continue;
+      var kids=(L.paragraphs&&L.paragraphs.length)?L.paragraphs:((L.lines&&L.lines.length)?L.lines:null);
+      if(kids) collect(kids);
+      else if(L.text&&L.bbox) seen.push(L);
+    }
+  }
+  if(d.blocks) collect(d.blocks);
+  if(!seen.length&&d.lines) collect(d.lines);
+  if(!seen.length&&d.paragraphs) collect(d.paragraphs);
+  for(var i=0;i<seen.length;i++){
+    var L=seen[i],t=normChars(String(L.text)).replace(/\s+/g," ").trim();
+    if(!t) continue;
+    var b=L.bbox,h=Math.max(4,(b.y1-b.y0)/scale);
+    var y=pageH-(b.y1/scale);
+    lines.push({text:t,y:y,h:h,x:b.x0/scale,w:(b.x1-b.x0)/scale,right:b.x1/scale,
+                font:"ocr",fam:"",rel:y/pageH,cells:0});
+  }
+  if(!lines.length&&d.text){
+    var raw=String(d.text).split(/\r?\n/),step=pageH/Math.max(1,raw.length+1);
+    for(i=0;i<raw.length;i++){
+      var s2=normChars(raw[i]).replace(/\s+/g," ").trim();
+      if(!s2) continue;
+      var yy=pageH-(i+1)*step;
+      lines.push({text:s2,y:yy,h:step*0.62,x:0,w:pageH,right:pageH*0.75,font:"ocr",fam:"",rel:yy/pageH,cells:0});
+    }
+  }
+  lines.sort(function(a,b2){ return b2.y-a.y; });
+  return lines;
+}
+function offerOCR(pdf,name,id,n,mountPlain){
+  var est=Math.round(n*3.5);
+  overlay('<h3>This PDF has no text in it</h3>'+
+    '<p>It is '+n+' page'+(n===1?"":"s")+' of images — a scan or photographs. I can run character '+
+    'recognition here in the browser to pull the words out. Nothing is uploaded; it just takes a '+
+    'while, roughly '+fmtTime(est)+' for this one, and the first run downloads the recognition engine.</p>'+
+    '<div style="display:flex;gap:8px;justify-content:center">'+
+    '<button class="btn" id="ocrGo">Read it with OCR</button>'+
+    '<button class="btn ghost" id="ocrNo">Open it anyway</button></div>');
+  $("#ocrGo").onclick=function(){ runOCR(pdf,name,id,n); };
+  $("#ocrNo").onclick=function(){ overlayClose(); mountPlain(); };
+}
+function runOCR(pdf,name,id,n){
+  ST.ocrStop=false;
+  overlay('<h3>Reading the pages</h3><p id="ovLabel">Loading the recognition engine…</p>'+
+    '<div class="bar"><i id="ovBar"></i></div>'+
+    '<p class="lbl" id="ovSub" style="margin:6px 0 16px"></p>'+
+    '<button class="btn ghost small" id="ocrStop">Stop and read what is done</button>');
+  $("#ocrStop").onclick=function(){ ST.ocrStop=true; progress(100,"Finishing up…"); };
+  var base=window.PR_OCR_BASE,t0=Date.now(),pages=[],worker=null;
+  loadScriptOnce(base+"tesseract.min.js").then(function(){
+    return Tesseract.createWorker("eng",1,{
+      workerPath:base+"worker.min.js",
+      corePath:base,
+      langPath:base+"lang",
+      gzip:true,
+      logger:function(m){
+        if(m.status&&/loading|initializ|download/i.test(m.status)) progress((m.progress||0)*8,"Loading the recognition engine…");
+      }
+    });
+  }).then(function(w){
+    worker=w;
+    function page(i){
+      if(i>n||ST.ocrStop) return done();
+      var pct=8+((i-1)/n)*90;
+      progress(pct,"Page "+i+" of "+n);
+      var per=(Date.now()-t0)/1000/Math.max(1,i-1);
+      if(i>1) $("#ovSub").textContent="about "+fmtTime(per*(n-i+1))+" to go";
+      return pdf.getPage(i).then(function(pg){
+        var scale=Math.min(2.8,2600/pg.getViewport({scale:1}).width);
+        var vp=pg.getViewport({scale:scale});
+        var cv=document.createElement("canvas");
+        cv.width=Math.floor(vp.width); cv.height=Math.floor(vp.height);
+        return pg.render({canvasContext:cv.getContext("2d",{alpha:false}),viewport:vp}).promise
+          .then(function(){ return worker.recognize(cv,{},{text:true,blocks:true}); })
+          .then(function(res){
+            var base1=pg.getViewport({scale:1});
+            pages.push({num:i,lines:ocrLines(res.data,scale,base1.height),height:base1.height,width:base1.width});
+            cv.width=cv.height=0;
+            pg.cleanup&&pg.cleanup();
+            return new Promise(function(r){ setTimeout(function(){ r(page(i+1)); },0); });
+          });
+      });
+    }
+    return page(1);
+  }).then(function(){
+    if(worker) worker.terminate();
+  }).catch(function(err){
+    console.error(err);
+    if(worker) try{ worker.terminate(); }catch(e){}
+    overlay('<h3>Recognition failed</h3><p>'+esc((err&&err.message)||"Unknown error")+
+      '</p><button class="btn" id="ovOk">Back</button>');
+    $("#ovOk").onclick=overlayClose;
+  });
+  function done(){
+    if(!pages.length){
+      overlay('<h3>Nothing came back</h3><p>The recogniser could not find words on these pages.</p>'+
+        '<button class="btn" id="ovOk">Back</button>');
+      $("#ovOk").onclick=overlayClose;
+      return;
+    }
+    progress(99,"Sorting out the text…");
+    pages.sort(function(a,b){ return a.num-b.num; });
+    stripFurniture(pages);
+    var blocks=toBlocks(pages);
+    var model=buildModel(blocks,{id:id,title:name.replace(/\.pdf$/i,""),pages:n});
+    model.title=niceTitle(model,model.title);
+    model.ocr=true;
+    model.warning="Read by character recognition, not from a text layer — expect the odd wrong word, and check anything that matters against the page."+
+      (ST.ocrStop?" You stopped after "+pages.length+" of "+n+" pages.":"");
+    mountModel(model);
+    toast("Recognised "+pages.length+" page"+(pages.length===1?"":"s")+" in "+fmtTime((Date.now()-t0)/1000)+".");
+  }
 }
 
 /* ---------------- 18. INIT ---------------- */
