@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Paper Radio</title>
+<meta name="description" content="Drop in a PDF and it reads the document aloud — your voice, your speed — while you highlight what matters and keep your own notes. Everything happens in your browser.">
+<meta name="theme-color" content="#E7EAEF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0F1216" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,300..700&display=swap">
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+<div id="app" data-view="intake" data-panel="closed" data-playing="0">
+
+  <!-- ================= INTAKE ================= -->
+  <section id="intake">
+    <div class="intake-inner">
+      <div class="brand"><h1>Paper Radio</h1><span class="dot"></span></div>
+      <p class="tagline">Drop in a PDF and it reads the thing out loud — <em>your voice, your speed</em> — while you highlight the parts worth keeping and write your own notes beside them.</p>
+
+      <div class="plate" id="plate">
+        <svg class="glyph" width="46" height="40" viewBox="0 0 46 40" fill="none" aria-hidden="true">
+          <rect x="6.5" y="1" width="21" height="27" rx="1.5" stroke="currentColor" stroke-width="1.4" opacity=".55"/>
+          <path d="M11 8h12M11 12.5h12M11 17h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity=".55"/>
+          <path d="M32 12c2.4 2.2 2.4 6.4 0 8.6" stroke="var(--signal-live)" stroke-width="1.6" stroke-linecap="round"/>
+          <path d="M36.5 8c4.3 4 4.3 12.6 0 16.6" stroke="var(--signal-live)" stroke-width="1.6" stroke-linecap="round" opacity=".55"/>
+          <path d="M20 31.5v6M14 33v3M26 33v3M8 34v1M32 33.5v2" stroke="var(--signal-live)" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        <h2>Drop a PDF here</h2>
+        <p>Or pick one from your computer. Everything happens inside this browser tab — the file is never uploaded anywhere.</p>
+        <button class="btn" id="pick">Choose a PDF</button>
+        <input type="file" id="file" accept="application/pdf,.pdf" class="vh">
+        <div class="specs lbl">
+          <span>Stays on your device</span>
+          <span>Any text-based PDF</span>
+          <span>Works offline</span>
+        </div>
+      </div>
+
+      <div class="recent" id="recent" hidden>
+        <h3 class="lbl">Pick up where you left off</h3>
+        <ul id="recentList"></ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= READER ================= -->
+  <div id="reader">
+    <header id="topbar">
+      <button class="tb-btn" id="back" title="Open a different PDF">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Library</span>
+      </button>
+      <div id="docTitle">Document</div>
+      <div id="docStats" class="lbl"></div>
+      <button class="tb-btn" id="sizeDown" title="Smaller text" aria-label="Smaller text">A<span style="font-size:.75em">a</span></button>
+      <button class="tb-btn" id="sizeUp" title="Larger text" aria-label="Larger text" style="font-size:15px">A<span style="font-size:1.1em">a</span></button>
+      <button class="tb-btn" id="marksBtn" aria-pressed="false" title="Your notes (N)">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 2.5h8v11l-4-3-4 3z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+        <span>Notes</span><b class="count" id="markCount" hidden>0</b>
+      </button>
+    </header>
+
+    <div id="mid">
+      <div id="stage">
+        <article id="doc"></article>
+        <button id="jump">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M4 9l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Back to where it's reading
+        </button>
+      </div>
+
+      <aside id="panel" aria-label="Your notes">
+        <div class="pn-head">
+          <div class="row">
+            <h2>Notes</h2>
+            <button class="tb-btn" id="panelClose" aria-label="Close notes" title="Close">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+          <div class="markbar">
+            <div class="swatches" id="colorFilter" role="group" aria-label="Filter by colour">
+              <button data-filter="all" aria-pressed="true">All</button>
+              <button data-filter="butter" class="sw butter" aria-pressed="false" aria-label="Butter"></button>
+              <button data-filter="moss" class="sw moss" aria-pressed="false" aria-label="Moss"></button>
+              <button data-filter="sky" class="sw sky" aria-pressed="false" aria-label="Sky"></button>
+              <button data-filter="rose" class="sw rose" aria-pressed="false" aria-label="Rose"></button>
+            </div>
+            <span class="deck-sp"></span>
+            <button class="mini" id="clearMarks">Clear all</button>
+          </div>
+        </div>
+        <div class="pn-body">
+          <ul class="marklist" id="markList"></ul>
+          <div class="actions" id="markActions">
+            <button class="btn small ghost" id="copyMarks">Copy all</button>
+            <button class="btn small ghost" id="dlMarks">Download .md</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <footer id="deck">
+      <div id="rail" role="slider" tabindex="0" aria-label="Position in document" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div id="railFill"></div><div id="railTicks"></div>
+      </div>
+      <div class="deck-row">
+        <div class="transport">
+          <button class="tp" id="prevPage" title="Previous page" aria-label="Previous page">
+            <svg width="17" height="17" viewBox="0 0 18 18" fill="none"><path d="M12 3.5 6.5 9l5.5 5.5M4.5 4v10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="tp" id="prevSent" title="Previous sentence" aria-label="Previous sentence">
+            <svg width="17" height="17" viewBox="0 0 18 18" fill="none"><path d="M11.5 4 6 9l5.5 5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="tp" id="play" title="Play (space)" aria-label="Play">
+            <svg width="19" height="19" viewBox="0 0 18 18" fill="none" id="playIcon"><path d="M5.5 3.5l9 5.5-9 5.5z" fill="currentColor"/></svg>
+          </button>
+          <button class="tp" id="nextSent" title="Next sentence" aria-label="Next sentence">
+            <svg width="17" height="17" viewBox="0 0 18 18" fill="none"><path d="M6.5 4 12 9l-5.5 5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="tp" id="nextPage" title="Next page" aria-label="Next page">
+            <svg width="17" height="17" viewBox="0 0 18 18" fill="none"><path d="M6 3.5 11.5 9 6 14.5M13.5 4v10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="tp mark-now" id="markNow" title="Note this sentence (M)" aria-label="Note this sentence">
+            <svg width="17" height="17" viewBox="0 0 18 18" fill="none"><path d="M5 2.8h8v12.4l-4-3.1-4 3.1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+        <div id="meter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+        <div id="pos"><span id="posNow" class="num">—</span><span id="posLeft" class="lbl"></span></div>
+        <div class="deck-sp"></div>
+
+        <div class="ctl" id="voiceWrap">
+          <label class="lbl" for="voice">Voice</label>
+          <select id="voice"></select>
+        </div>
+        <div class="ctl" id="speedWrap" role="group" aria-label="Speed">
+          <button class="sp" data-rate="0.75">0.75×</button>
+          <button class="sp" data-rate="1" aria-pressed="true">1×</button>
+          <button class="sp" data-rate="1.25">1.25×</button>
+          <button class="sp" data-rate="1.5">1.5×</button>
+          <button class="sp" data-rate="2">2×</button>
+        </div>
+        <button class="tb-btn" id="tuneBtn" aria-expanded="false" title="Fine tuning">
+          <svg width="16" height="16" viewBox="0 0 18 18" fill="none"><path d="M3 5.5h5M11 5.5h4M3 12.5h4M10 12.5h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="9.5" cy="5.5" r="2" stroke="currentColor" stroke-width="1.5"/><circle cx="8.5" cy="12.5" r="2" stroke="currentColor" stroke-width="1.5"/></svg>
+        </button>
+      </div>
+
+      <div id="tune">
+        <div class="tune-row">
+          <div class="top"><span class="lbl">Speed</span><span class="val" id="rateVal">1.00×</span></div>
+          <input type="range" id="rate" min="0.5" max="3" step="0.05" value="1">
+        </div>
+        <div class="tune-row">
+          <div class="top"><span class="lbl">Pitch</span><span class="val" id="pitchVal">1.00</span></div>
+          <input type="range" id="pitch" min="0.5" max="1.6" step="0.05" value="1">
+        </div>
+        <div class="tune-row">
+          <div class="top"><span class="lbl">Volume</span><span class="val" id="volVal">100%</span></div>
+          <input type="range" id="vol" min="0" max="1" step="0.05" value="1">
+        </div>
+        <div class="tune-row">
+          <div class="top"><span class="lbl">Pause between sentences</span><span class="val" id="gapVal">0 ms</span></div>
+          <input type="range" id="gap" min="0" max="900" step="50" value="0">
+        </div>
+        <div class="keys">
+          <span><kbd>space</kbd> play</span><span><kbd>&larr;</kbd><kbd>&rarr;</kbd> sentence</span>
+          <span><kbd>[</kbd><kbd>]</kbd> page</span><span><kbd>&uarr;</kbd><kbd>&darr;</kbd> speed</span>
+          <span><kbd>M</kbd> note it</span><span><kbd>N</kbd> notes</span>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <div id="hlTool" role="toolbar" aria-label="Highlight">
+    <button class="sw butter" data-color="butter" title="Butter" aria-label="Butter"></button>
+    <button class="sw moss"   data-color="moss"   title="Moss"   aria-label="Moss"></button>
+    <button class="sw sky"    data-color="sky"    title="Sky"    aria-label="Sky"></button>
+    <button class="sw rose"   data-color="rose"   title="Rose"   aria-label="Rose"></button>
+    <span class="div"></span>
+    <button class="ic" id="hlNote" title="Add a note" aria-label="Add a note">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M3 3.5h10M3 7h10M3 10.5h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
+    <button class="ic" id="hlDel" title="Remove" aria-label="Remove" hidden>
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M3.5 4.5h9M6.5 4.5V3h3v1.5M5 4.5l.6 8h4.8l.6-8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
+
+  <!-- ================= OVERLAY ================= -->
+  <div id="overlay">
+    <div class="card" id="ovCard"></div>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+</div>
+
+<script>window.PR_WORKER_SRC = "vendor/pdf.worker.min.js";</script>
+<script src="vendor/pdf.min.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>
