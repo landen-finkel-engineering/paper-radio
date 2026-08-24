@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Paper Radio">
+  <rect width="64" height="64" rx="14" fill="#14181F"/>
+  <rect x="12" y="11" width="24" height="31" rx="2.5" fill="none" stroke="#E7EAEF" stroke-width="2.4" opacity=".9"/>
+  <path d="M18 19h12M18 25h12M18 31h8" stroke="#E7EAEF" stroke-width="2.4" stroke-linecap="round" opacity=".55"/>
+  <path d="M42 22.5c3 2.9 3 8.1 0 11" stroke="#E8940D" stroke-width="2.8" stroke-linecap="round" fill="none"/>
+  <path d="M48.5 17.5c5.6 5.4 5.6 18.2 0 23.6" stroke="#E8940D" stroke-width="2.8" stroke-linecap="round" fill="none" opacity=".55"/>
+  <path d="M17 48v6M24 45.5v8.5M31 49.5v4.5M38 46.5v7.5M45 50v4" stroke="#E8940D" stroke-width="3" stroke-linecap="round"/>
+</svg>
